@@ -11,7 +11,100 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
+    - name: name: Build strongR-frida
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build_strongR.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    
+    steps:
     - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+        
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+        
+    - name: Setup Android NDK
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r25c
+        local-cache: false
+        
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential ninja-build gcc-multilib \
+          g++-multilib lib32stdc++-9-dev flex bison ruby ruby-dev \
+          python3-requests python3-setuptools python3-dev python3-pip git
+        sudo gem install fpm -v 1.11.0 --no-document
+        pip3 install lief graphlib
+        
+    - name: Clone Frida
+      run: |
+        git clone --recurse-submodules https://github.com/frida/frida.git
+        cd frida
+        git checkout 17.5.2
+        
+    - name: Clone strongR patches
+      run: |
+        git clone https://github.com/AAAA-Project/Patchs.git
+        
+    - name: Apply patches
+      run: |
+        cd frida/subprojects/frida-core
+        for patch in ../../Patchs/strongR-frida/frida-core/*.patch; do
+          echo "Applying: $patch"
+          git am "$patch" || {
+            git am --abort
+            git apply "$patch"
+          }
+        done
+        
+    - name: Build ARM64
+      run: |
+        mkdir build-android-arm64
+        cd build-android-arm64
+        ../frida/configure --host=android-arm64
+        make -j$(nproc)
+        
+    - name: Package artifacts
+      run: |
+        cd build-android-arm64/subprojects/frida-core
+        gzip -f server/frida-server
+        gzip -f inject/frida-inject
+        gzip -f lib/gadget/frida-gadget.so
+        
+    - name: Upload frida-server
+      uses: actions/upload-artifact@v4
+      with:
+        name: frida-server-17.5.2-android-arm64
+        path: build-android-arm64/subprojects/frida-core/server/frida-server.gz
+        
+    - name: Upload frida-inject
+      uses: actions/upload-artifact@v4
+      with:
+        name: frida-inject-17.5.2-android-arm64
+        path: build-android-arm64/subprojects/frida-core/inject/frida-inject.gz
+        
+    - name: Upload frida-gadget
+      uses: actions/upload-artifact@v4
+      with:
+        name: frida-gadget-17.5.2-android-arm64
+        path: build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so.gz
+Checkout code
       uses: actions/checkout@v3
       
     - name: Setup Node.js
