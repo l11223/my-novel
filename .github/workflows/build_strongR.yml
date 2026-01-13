@@ -57,42 +57,64 @@ jobs:
     - name: Apply patches
       run: |
         cd frida/subprojects/frida-core
-        for patch in ../../Patchs/strongR-frida/frida-core/*.patch; do
+        for patch in ../../../Patchs/strongR-frida/frida-core/*.patch; do
           echo "Applying: $patch"
-          git am "$patch" || {
-            git am --abort
-            git apply "$patch"
-          }
+          if [ -f "$patch" ]; then
+            git am "$patch" || {
+              git am --abort 2>/dev/null || true
+              git apply "$patch" || {
+                echo "Warning: Failed to apply $patch, continuing..."
+              }
+            }
+          fi
         done
         
     - name: Build ARM64
       run: |
-        mkdir build-android-arm64
-        cd build-android-arm64
-        ../frida/configure --host=android-arm64
+        cd frida
+        ./configure --host=android-arm64 --enable-portal
         make -j$(nproc)
         
     - name: Package artifacts
       run: |
-        cd build-android-arm64/subprojects/frida-core
-        gzip -f server/frida-server
-        gzip -f inject/frida-inject
-        gzip -f lib/gadget/frida-gadget.so
+        cd frida
+        # 查找编译产物
+        FRIDA_SERVER=$(find . -name "frida-server" -type f | grep -v ".git" | head -1)
+        FRIDA_INJECT=$(find . -name "frida-inject" -type f | grep -v ".git" | head -1)
+        FRIDA_GADGET=$(find . -name "frida-gadget.so" -type f | grep -v ".git" | head -1)
+        
+        if [ -n "$FRIDA_SERVER" ]; then
+          gzip -f "$FRIDA_SERVER"
+          echo "FRIDA_SERVER_PATH=${FRIDA_SERVER}.gz" >> $GITHUB_ENV
+        fi
+        
+        if [ -n "$FRIDA_INJECT" ]; then
+          gzip -f "$FRIDA_INJECT"
+          echo "FRIDA_INJECT_PATH=${FRIDA_INJECT}.gz" >> $GITHUB_ENV
+        fi
+        
+        if [ -n "$FRIDA_GADGET" ]; then
+          gzip -f "$FRIDA_GADGET"
+          echo "FRIDA_GADGET_PATH=${FRIDA_GADGET}.gz" >> $GITHUB_ENV
+        fi
         
     - name: Upload frida-server
       uses: actions/upload-artifact@v4
+      if: env.FRIDA_SERVER_PATH != ''
       with:
         name: frida-server-17.5.2-android-arm64
-        path: build-android-arm64/subprojects/frida-core/server/frida-server.gz
+        path: ${{ env.FRIDA_SERVER_PATH }}
         
     - name: Upload frida-inject
       uses: actions/upload-artifact@v4
+      if: env.FRIDA_INJECT_PATH != ''
       with:
         name: frida-inject-17.5.2-android-arm64
-        path: build-android-arm64/subprojects/frida-core/inject/frida-inject.gz
+        path: ${{ env.FRIDA_INJECT_PATH }}
         
     - name: Upload frida-gadget
       uses: actions/upload-artifact@v4
+      if: env.FRIDA_GADGET_PATH != ''
       with:
         name: frida-gadget-17.5.2-android-arm64
-        path: build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so.gz
+        path: ${{ env.FRIDA_GADGET_PATH }}
