@@ -27,8 +27,40 @@ jobs:
     - name: Setup Android NDK
       uses: nttld/setup-ndk@v1
       with:
-        ndk-version: r25c
+        ndk-version: r25b
         local-cache: false
+      id: setup-ndk
+        
+    - name: Verify NDK version
+      run: |
+        # 获取 NDK 路径
+        if [ -n "${{ steps.setup-ndk.outputs.ndk-path }}" ]; then
+          export ANDROID_NDK_ROOT="${{ steps.setup-ndk.outputs.ndk-path }}"
+        elif [ -n "$ANDROID_NDK_ROOT" ]; then
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT"
+        else
+          # 尝试从环境变量获取
+          export ANDROID_NDK_ROOT=$(find $HOME -name "android-ndk-r25*" -type d 2>/dev/null | head -1)
+        fi
+        
+        echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+        echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+        
+        if [ -z "$ANDROID_NDK_ROOT" ] || [ ! -d "$ANDROID_NDK_ROOT" ]; then
+          echo "Error: ANDROID_NDK_ROOT is not set or invalid"
+          exit 1
+        fi
+        
+        if [ -f "$ANDROID_NDK_ROOT/source.properties" ]; then
+          NDK_VERSION=$(grep "Pkg.Revision" "$ANDROID_NDK_ROOT/source.properties" | cut -d '=' -f 2 | tr -d ' ')
+          echo "Detected NDK version: $NDK_VERSION"
+          if [[ ! "$NDK_VERSION" =~ ^25\. ]]; then
+            echo "Error: NDK version must be r25.x, but found r${NDK_VERSION}"
+            exit 1
+          fi
+        else
+          echo "Warning: Cannot verify NDK version, but continuing..."
+        fi
         
     - name: Install dependencies
       run: |
@@ -57,21 +89,82 @@ jobs:
     - name: Apply patches
       run: |
         cd frida/subprojects/frida-core
-        for patch in ../../../Patchs/strongR-frida/frida-core/*.patch; do
-          echo "Applying: $patch"
+        
+        # 检查补丁目录
+        if [ ! -d "../../../Patchs/strongR-frida/frida-core" ]; then
+          echo "Error: Patch directory not found"
+          ls -la ../../../Patchs/strongR-frida/ || true
+          exit 1
+        fi
+        
+        # 按顺序应用补丁
+        PATCHES=(
+          "../../../Patchs/strongR-frida/frida-core/0001-string_frida_rpc.patch"
+          "../../../Patchs/strongR-frida/frida-core/0002-io_re_frida_server.patch"
+          "../../../Patchs/strongR-frida/frida-core/0003-pipe_linjector.patch"
+          "../../../Patchs/strongR-frida/frida-core/0004-io_frida_agent_so.patch"
+          "../../../Patchs/strongR-frida/frida-core/0005-symbol_frida_agent_main.patch"
+          "../../../Patchs/strongR-frida/frida-core/0006-thread_gum_js_loop.patch"
+          "../../../Patchs/strongR-frida/frida-core/0007-thread_gmain.patch"
+          "../../../Patchs/strongR-frida/frida-core/0008-protocol_unexpected_command.patch"
+        )
+        
+        for patch in "${PATCHES[@]}"; do
           if [ -f "$patch" ]; then
-            git am "$patch" || {
+            echo "Applying: $(basename $patch)"
+            git am "$patch" 2>&1 || {
+              echo "git am failed, trying git apply..."
               git am --abort 2>/dev/null || true
-              git apply "$patch" || {
-                echo "Warning: Failed to apply $patch, continuing..."
+              git apply "$patch" 2>&1 || {
+                echo "Warning: Failed to apply $(basename $patch), but continuing..."
+                # 对于某些补丁，失败可能是正常的（如果已经应用过）
               }
             }
+          else
+            echo "Warning: Patch file not found: $patch"
           fi
         done
+        
+        # 检查是否有 frida-gum 补丁需要应用
+        if [ -d "../../../Patchs/strongR-frida/frida-gum" ]; then
+          echo "Applying frida-gum patches..."
+          cd ../../frida-gum/gum
+          for patch in ../../../../Patchs/strongR-frida/frida-gum/*.patch; do
+            if [ -f "$patch" ]; then
+              echo "Applying: $(basename $patch)"
+              git am "$patch" 2>&1 || {
+                git am --abort 2>/dev/null || true
+                git apply "$patch" 2>&1 || {
+                  echo "Warning: Failed to apply $(basename $patch)"
+                }
+              }
+            fi
+          done
+        fi
         
     - name: Build ARM64
       run: |
         cd frida
+        
+        # 确保 NDK 环境变量已设置
+        if [ -z "$ANDROID_NDK_ROOT" ]; then
+          echo "Error: ANDROID_NDK_ROOT is not set"
+          exit 1
+        fi
+        
+        echo "Using NDK: $ANDROID_NDK_ROOT"
+        export ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT"
+        
+        # 验证 NDK 版本
+        if [ -f "$ANDROID_NDK_ROOT/source.properties" ]; then
+          NDK_VERSION=$(grep "Pkg.Revision" "$ANDROID_NDK_ROOT/source.properties" | cut -d '=' -f 2 | tr -d ' ')
+          echo "NDK version: $NDK_VERSION"
+          if [[ ! "$NDK_VERSION" =~ ^25\. ]]; then
+            echo "Error: NDK version must be r25.x, but found r${NDK_VERSION}"
+            exit 1
+          fi
+        fi
+        
         ./configure --host=android-arm64 --enable-portal
         make -j$(nproc)
         
